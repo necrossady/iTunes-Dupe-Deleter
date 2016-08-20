@@ -1,4 +1,5 @@
 import java.io.File
+import java.lang.SecurityException
 import java.util.Arrays
 import scala.annotation.tailrec
 import scala.io.StdIn
@@ -25,7 +26,7 @@ import scala.util.matching.Regex._
  */
 
 object iTunesDupeDeleter {
-    // Use a trait to get Files with Scala-styled constructor
+    // Java File with Scala-styled constructor
     trait sFile extends File
     object sFile { def apply(arg1:String) = new File(arg1)}
     case class FMatch   (fname : String, fext : String, f : File)
@@ -33,8 +34,28 @@ object iTunesDupeDeleter {
     // iTunes files are named in this format:
     val fileNameP = """(\d* ?.*)(\.[\d\w]*)""".r
         
+    // Exactly what it says on the tin
+    val folderToFileList : File => () => List[File] = { (folder : File) => () => { folder.listFiles.toList }     }
+        
     // I suppose it needs a way to run
     def main (args : Array[String]) : Unit = {
+        def fileListToString (files : List[File]) : String = { files match{
+                case Nil => ""
+                case x :: Nil => x.getPath
+                case x :: xs => x.getPath + "\n" + fileListToString(xs)
+            }
+        }
+        def process (file : File) = {
+            println("Working...")
+            val res = deleter(file)
+            if (res == Nil) println("Done")
+            else {
+                println("Error - The following files could not be deleted:\n")
+                println(fileListToString(res))
+                println("\nPlease make sure no files are open in another program " +
+                        "and try running the program again as admin.")
+            }
+        }
         def validateFolder(path : String) : (Boolean, File) = {
             val f = sFile(path)
             if (f.exists && f.isDirectory) (false, f)
@@ -49,28 +70,20 @@ object iTunesDupeDeleter {
                 val tmp = validateFolder(arg)
                 if(!tmp._1){
                     needGoodInput = false;
-                    val lister = folderToFileList(tmp._2)
-                    println("Working...")
-                    deleter(lister())
+                    process(tmp._2)
                 }
             }
         }
         while (needGoodInput){
-            userInput = readLine("Please provide file path to folder with dupes: ")
+            userInput = StdIn.readLine("Please provide file path to folder with dupes: ")
             val res = validateFolder(userInput)
             needGoodInput = res._1
             file = res._2
         }
-        val lister : () => List[File] = folderToFileList(file)
-        println("Working...")
-        deleter(lister())
-        println("Done")
+        
+        process(file)
     }
     
-    // Does something fairly obvious.
-    val folderToFileList : File => () => List[File] = {
-        (folder : File) => () => { folder.listFiles.toList }
-    }
     
     def regexMatcher (file : File) : FMatch = {
         var fm = fileNameP.findAllIn(file.getName)
@@ -87,35 +100,67 @@ object iTunesDupeDeleter {
         FMatch(fm.group(1), fm.group(2), file)
     }
     
-    
     // deleter starts the process of recursively deleting the dupes.
-    // Returns false if folder is empty, else true
-    def deleter (files : List[File]) : Boolean = {
-        files match {
-            case Nil        => false 
-            case x :: Nil   => true
-            case x :: xs    => deleterAux(xs, regexMatcher(x))
+    // Returns a list of files which could not be deleted.
+    def deleter (file : File) : List[File] = {
+        def deleterAux1 (files : List[File], acc : List[File]) : List[File] = {
+            files match {
+                case Nil        => acc
+                case x :: Nil   => {
+                    if (x.isDirectory) acc ::: deleter(x)
+                    else acc
+                }
+                case x :: xs    => {
+                    if (x.isDirectory) deleterAux1(xs, acc ::: deleter(x))
+                    else deleterAux2(xs, regexMatcher(x), acc)
+                }
+            }
         }
+    
+        // @tailrec 
+        def deleterAux2 (files : List[File], oldFileMatch : FMatch, acc : List[File]) : List[File] = {
+            files match {
+                case Nil => acc
+                case x :: xs => {
+                    if (x.isDirectory) deleterAux1(xs, acc ::: deleter(x)); 
+                    else {
+                        var fm : FMatch = null
+                        try{
+                            fm = checkAndDeleteDupes(x, oldFileMatch)
+                        } catch { // If x should have been deleted, oldFileMatch will catch the same dupes:
+                            case se : SecurityException => // leave fm null
+                        } 
+                        fm match {
+                            case null   => deleterAux2(xs, fm, fm.f :: acc)
+                            case _      => deleterAux2(xs, fm, acc)
+                        }
+                    }
+                }
+            }
+        }  
+        
+        if (!file.isDirectory) file :: Nil
+        else folderToFileList(file).apply match {
+            case Nil        => Nil
+            case x :: Nil   => {
+                if (x.isDirectory) deleter(x)
+                else Nil
+            }
+            case x :: xs    => { 
+                if (x.isDirectory) deleterAux1(xs, deleter(x))
+                else deleterAux2(xs, regexMatcher(x), Nil)
+            }   
+        }        
     }
     
-    // deleterAux recursively traverses the List of Files.
-    // If the List is empty, it returns true to say it is done.
-    // If it is not empty, it calls checkAndDeleteDupes
-    @tailrec 
-    def deleterAux (files : List[File], oldFileMatch : FMatch) : Boolean = {
-        files match {
-            case Nil => true
-            case x :: xs => deleterAux(xs, checkAndDeleteDupes(x, oldFileMatch))
-        }
-    }
     
     // Deletes the duplicate files of the previous file in the folder.
     // As of now, it may not work properly with files of multiple extensions
     //  in the same folder; though in a properly sorted library, this shouldn't
     //  happen. I may fix that later.
     // Java sorts "01 Filename 1.ext" before "01 Filename.ext" so the code here is counterintuitive.
-    // Returns (newFileName, true) if the file was a dupe and deleted. 
-    // Returns (newFileName, false) if the file was a unique file.
+    // Returns newFileMatch. 
+    @throws(classOf[SecurityException])
     def checkAndDeleteDupes (newFile : File, oldFileMatch : FMatch) : FMatch = {
         val newFileMatch = regexMatcher(newFile)
         var wasDupe : Boolean = false;

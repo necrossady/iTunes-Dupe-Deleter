@@ -15,8 +15,7 @@ scalacOptions ++=
 libraryDependencies ++= Seq(
   "org.scalatest"  %% "scalatest"  % "2.2.1"  % "test",
   "org.scalacheck" %% "scalacheck" % "1.11.5" % "test",
-  "org.pegdown"    %  "pegdown"    % "1.4.2"  % "test",
-  "org.scala-lang" % "scala-swing" % "2.11+"
+  "org.pegdown"    %  "pegdown"    % "1.4.2"  % "test"
 )
 
 seq(SbtStartScript.startScriptForClassesSettings: _*)
